@@ -1,0 +1,5 @@
+{
+  "name": "Stable Copy of 3D Brain Connectivity Visualizer",
+  "description": "An interactive 3D viewer for brain surfaces and neural connections. Upload your MNE source space files (in JSON format) for the brain surface, vertex locations, and an adjacency matrix to visualize the connectivity map in a draggable 3D environment.",
+  "requestFramePermissions": []
+}
