@@ -47,6 +47,6 @@ export interface VoronoiData {
   data: VoronoiInfo | null;
   enabled: boolean;
   maxAbsValue?: number;
-  colormap: 'viridis' | 'redblue';
+  colormap: 'viridis' | 'redblue' | 'fourregion';
   opacity: number;
 }

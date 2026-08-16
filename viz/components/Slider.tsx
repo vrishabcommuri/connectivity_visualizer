@@ -2,6 +2,7 @@ import React from 'react';
 
 interface SliderProps {
   label: string;
+  description?: string;
   id: string;
   min: number;
   max: number;
@@ -10,13 +11,14 @@ interface SliderProps {
   onChange: (value: number) => void;
 }
 
-const Slider: React.FC<SliderProps> = ({ label, id, min, max, step, value, onChange }) => {
+const Slider: React.FC<SliderProps> = ({ label, description, id, min, max, step, value, onChange }) => {
   return (
     <div>
       <label htmlFor={id} className="flex justify-between text-sm font-medium text-slate-400 mb-1">
         <span>{label}</span>
         <span>{value.toFixed(2)}</span>
       </label>
+      {description && <p className="text-xs text-slate-500 mb-1 italic">{description}</p>}
       <input
         id={id}
         type="range"

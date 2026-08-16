@@ -17,6 +17,8 @@ import { CameraSideIcon } from './components/icons/CameraSideIcon';
 import { ScreenshotIcon } from './components/icons/ScreenshotIcon';
 import { CameraRotationIcon } from './components/icons/CameraRotationIcon';
 import { CameraHemispheresIcon } from './components/icons/CameraHemispheresIcon';
+import { GridIcon } from './components/icons/GridIcon';
+import { CameraTwoPanelIcon } from './components/icons/CameraTwoPanelIcon';
 
 const defaultConnectionColors = [
   '#4ADE80', // green
@@ -98,9 +100,19 @@ const App: React.FC = () => {
   
   const [error, setError] = useState<string | null>(null);
   const [showConnections, setShowConnections] = useState(true);
+  const [centerArrowheads, setCenterArrowheads] = useState(false);
   const [useCurvature, setUseCurvature] = useState(false);
   const [curvature, setCurvature] = useState(0.6);
+  const [useFDEB, setUseFDEB] = useState(false);
+  const [useBundleColoring, setUseBundleColoring] = useState(false);
+  const [fdebStiffness, setFdebStiffness] = useState(0.1);
+  const [fdebCompatibility, setFdebCompatibility] = useState(0.6);
+  const [fdebCycles, setFdebCycles] = useState(6);
+  const [fdebIterations, setFdebIterations] = useState(90);
+  const [fdebSubdivisions, setFdebSubdivisions] = useState(1);
+  const [fdebStepSize, setFdebStepSize] = useState(0.1);
   const [presentationMode, setPresentationMode] = useState(false);
+  const [cartoonMode, setCartoonMode] = useState(false);
   
   const [backgroundColor, setBackgroundColor] = useState(DEFAULT_BACKGROUND_COLOR);
   const [currentTimeIndex, setCurrentTimeIndex] = useState(0);
@@ -113,12 +125,14 @@ const App: React.FC = () => {
 
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Server mode state
-  const [isServerMode, setIsServerMode] = useState(false);
-  const [serverStatus, setServerStatus] = useState<'Disabled' | 'Disconnected' | 'Connecting...' | 'Connected' | 'Processing...'>('Disabled');
-  const pollingInterval = useRef<number | null>(null);
-  const [screenshotRequest, setScreenshotRequest] = useState(false);
-  const screenshotResolver = useRef<((blob: Blob | null) => void) | null>(null);
+  // Batch processing state
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [batchInputPath, setBatchInputPath] = useState('data/matrices');
+  const [batchOutputPath, setBatchOutputPath] = useState('output');
+  const [batchFiles, setBatchFiles] = useState<string[]>([]);
+  const [batchIndex, setBatchIndex] = useState(-1);
+  const [batchStatus, setBatchStatus] = useState<'Idle' | 'Scanning...' | 'Processing...' | 'Success' | 'Error'>('Idle');
+  const [batchLog, setBatchLog] = useState<string[]>([]);
 
   const handleVertexFileSelect = useCallback(async (file: File, groupId: string) => {
     setError(null);
@@ -161,6 +175,16 @@ const App: React.FC = () => {
   
   const handleBrainFileClear = useCallback((id: string) => {
     setBrainSurfaces(prev => prev.map(s => s.id === id ? { ...s, file: null, surface: null } : s));
+  }, []);
+
+  const handleAdjacencyFileSetWithFormat = useCallback(async (data: any, name: string, groupId: string, matrixId: string) => {
+    setError(null);
+    if (isAdjacencyMatrix(data)) {
+      const updateMatrixWithData = (matrix: AdjacencyMatrixData) => matrix.id === matrixId ? { ...matrix, matrix: data, file: new File([], name) } : matrix;
+      setConnectivityGroups(prev => prev.map(g => g.id === groupId ? { ...g, adjacencyMatrices: g.adjacencyMatrices.map(updateMatrixWithData) } : g));
+    } else {
+      throw new Error(`Invalid JSON structure in ${name}`);
+    }
   }, []);
 
   const handleAdjacencyFileSelect = useCallback(async (file: File, groupId: string, matrixId: string) => {
@@ -284,159 +308,117 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleServerCommand = useCallback(async (command: any) => {
-    if (command.name === 'stage_surfaces') {
-        const { mesh_url, vertices_url, color, opacity } = command.data;
-        const meshFile = await urlToFile(mesh_url, 'surface.json', 'application/json');
-        const verticesFile = await urlToFile(vertices_url, 'vertices.json', 'application/json');
-
-        const newSurface = createNewBrainSurface();
-        if (color) newSurface.color = color;
-        if (typeof opacity === 'number') newSurface.opacity = opacity;
-
-        const newGroup = createNewConnectivityGroup();
-
-        let surfaceIdToUpdate = newSurface.id;
-        setBrainSurfaces(prev => {
-            if (prev.length === 1 && !prev[0].file) {
-                surfaceIdToUpdate = prev[0].id;
-                newSurface.id = prev[0].id; // Use existing ID for update
-                return [newSurface];
-            }
-            return [...prev, newSurface];
-        });
-
-        let groupIdToUpdate = newGroup.id;
-        setConnectivityGroups(prev => {
-            if (prev.length === 1 && !prev[0].vertexLocationsFile) {
-                groupIdToUpdate = prev[0].id;
-                newGroup.id = prev[0].id; // Use existing ID for update
-                newGroup.adjacencyMatrices = [createNewMatrix()];
-                return [newGroup];
-            }
-            return [...prev, newGroup];
-        });
-
-        await new Promise(res => setTimeout(res, 50)); 
-        await handleBrainFileSelect(meshFile, surfaceIdToUpdate);
-        await handleVertexFileSelect(verticesFile, groupIdToUpdate);
-
-    } else if (command.name === 'stage_adjacency') {
-        const { adjacency_url, color, maxOpacity, thickness } = command.data;
-        const adjFile = await urlToFile(adjacency_url, 'adjacency.json', 'application/json');
-
-        const newMatrix = createNewMatrix();
-        if (color) newMatrix.color = color;
-        if (typeof maxOpacity === 'number') newMatrix.maxOpacity = maxOpacity;
-        if (typeof thickness === 'number') newMatrix.thickness = thickness;
-
-        const targetGroupId = connectivityGroups.length > 0 ? connectivityGroups[connectivityGroups.length - 1].id : null;
-
-        if (!targetGroupId) {
-            console.error("Cannot stage adjacency matrix: No connectivity group is staged.");
-            setError("Cannot stage adjacency matrix: No connectivity group is staged.");
-            return;
-        }
-        
-        setConnectivityGroups(prev => prev.map(g => {
-            if (g.id !== targetGroupId) return g;
-            const matrices = g.adjacencyMatrices;
-            if (matrices.length === 1 && !matrices[0].file) {
-                newMatrix.id = matrices[0].id;
-                return { ...g, adjacencyMatrices: [newMatrix] };
-            } else {
-                return { ...g, adjacencyMatrices: [...matrices, newMatrix] };
-            }
-        }));
-        
-        await new Promise(res => setTimeout(res, 50));
-        await handleAdjacencyFileSelect(adjFile, targetGroupId, newMatrix.id);
-
-    } else if (command.name === 'screenshot') {
-        await new Promise<Blob | null>((resolve) => {
-            screenshotResolver.current = resolve;
-            setScreenshotRequest(true);
-        }).then(async (blob) => {
-            if (blob) {
-                const formData = new FormData();
-                formData.append('screenshot', blob, 'screenshot.png');
-                await fetch('http://localhost:5000/upload_screenshot', {
-                    method: 'POST',
-                    body: formData,
-                });
-            } else {
-                console.error("Screenshot generation failed, received null blob.");
-            }
-        });
-    } else if (command.name === 'clear') {
-        setBrainSurfaces([createNewBrainSurface()]);
-        setConnectivityGroups([createNewConnectivityGroup()]);
-        setVoronoiOverlays([]);
-    }
-  }, [connectivityGroups, handleBrainFileSelect, handleVertexFileSelect, handleAdjacencyFileSelect]);
-
-  // Effect for polling the server
-  useEffect(() => {
-    if (!isServerMode) {
-      if (pollingInterval.current) clearInterval(pollingInterval.current);
-      setServerStatus('Disabled');
+  const startBatchProcessing = useCallback(async () => {
+    if (!batchInputPath || !batchOutputPath) {
+      setError("Please provide both input and output paths.");
       return;
     }
 
-    setServerStatus('Connecting...');
-
-    const poll = async () => {
-      try {
-        const response = await fetch('http://localhost:5000/get_command');
-        if (!response.ok) throw new Error('Network response was not ok');
-
-        if (serverStatus === 'Connecting...' || serverStatus === 'Disconnected') {
-           setServerStatus('Connected');
-        }
-        
-        const command = await response.json();
-        
-        if (command && command.name) {
-          setServerStatus('Processing...');
-          try {
-            await handleServerCommand(command);
-             await fetch('http://localhost:5000/command_complete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: command.id }),
-            });
-          } catch (e) {
-             console.error("Error processing command:", e);
-             setError(e instanceof Error ? e.message : 'Unknown processing error');
-          } finally {
-             setServerStatus('Connected');
-          }
-        }
-      } catch (error) {
-        if (serverStatus !== 'Disabled') {
-            setServerStatus('Disconnected');
-        }
-      }
-    };
-
-    pollingInterval.current = window.setInterval(poll, 2000);
-    return () => {
-        if (pollingInterval.current) clearInterval(pollingInterval.current);
-    };
-  }, [isServerMode, handleServerCommand]);
-
-  // Effect to trigger screenshot after render
-  useEffect(() => {
-    if (screenshotRequest && brainViewerRef.current) {
-      brainViewerRef.current.takeScreenshot((blob) => {
-        if (screenshotResolver.current) {
-          screenshotResolver.current(blob);
-          screenshotResolver.current = null;
-        }
-        setScreenshotRequest(false);
-      });
+    if (!brainViewerRef.current) {
+      setError("3D Viewer is not initialized. Please wait or upload a surface file.");
+      return;
     }
-  }, [screenshotRequest]);
+
+    setBatchStatus('Scanning...');
+    setBatchLog(["Scanning directory..."]);
+    setBatchFiles([]);
+    setBatchIndex(-1);
+    isProcessingFile.current = false;
+    
+    try {
+      const res = await fetch(`/api/batch/list-files?path=${encodeURIComponent(batchInputPath)}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      if (data.files.length === 0) {
+        setBatchStatus('Idle');
+        setBatchLog(prev => [...prev, "No JSON files found in directory."]);
+        return;
+      }
+
+      setBatchFiles(data.files);
+      setBatchIndex(0);
+      setBatchStatus('Processing...');
+      setBatchLog(prev => [...prev, `Found ${data.files.length} files. Starting processing...`]);
+    } catch (e) {
+      setBatchStatus('Error');
+      setBatchLog(prev => [...prev, `Error scanning: ${(e as Error).message}`]);
+    }
+  }, [batchInputPath, batchOutputPath]);
+
+  const isProcessingFile = useRef(false);
+
+  useEffect(() => {
+    if (batchIndex >= 0 && batchIndex < batchFiles.length && batchStatus === 'Processing...' && !isProcessingFile.current) {
+      const processFile = async () => {
+        isProcessingFile.current = true;
+        const fileName = batchFiles[batchIndex];
+        const filePath = `${batchInputPath}/${fileName}`;
+        
+        try {
+          setBatchLog(prev => [...prev, `[${batchIndex + 1}/${batchFiles.length}] Loading ${fileName}...`]);
+          
+          const res = await fetch(`/api/batch/load-file?path=${encodeURIComponent(filePath)}`);
+          if (!res.ok) throw new Error(`Failed to load file ${fileName}`);
+          const data = await res.json();
+          
+          // Apply to the first matrix of the first group
+          const targetGroup = connectivityGroups[0];
+          const targetMatrix = targetGroup.adjacencyMatrices[0];
+          
+          await handleAdjacencyFileSetWithFormat(data, fileName, targetGroup.id, targetMatrix.id);
+
+          // Wait for state updates to propagate and 3D scene to respond
+          // We wait a bit longer to ensure everything is stable
+          await new Promise(resolve => setTimeout(resolve, 1500));
+
+          // Capture
+          await new Promise<void>((resolve, reject) => {
+            if (!brainViewerRef.current) return reject(new Error("Viewer not ready"));
+            
+            brainViewerRef.current.takeScreenshot(async (blob) => {
+              if (!blob) {
+                reject(new Error("Failed to capture screenshot"));
+                return;
+              }
+              
+              const outputFilename = fileName.replace(/\.[^/.]+$/, "") + "_3panel.png";
+              const saveRes = await fetch(`/api/batch/save-screenshot?filename=${encodeURIComponent(outputFilename)}&outputDir=${encodeURIComponent(batchOutputPath)}`, {
+                method: 'POST',
+                body: blob,
+                headers: { 'Content-Type': 'image/png' }
+              });
+              
+              const saveData = await saveRes.json();
+              if (saveData.error) {
+                reject(new Error(saveData.error));
+              } else {
+                setBatchLog(prev => [...prev, `  Saved: ${outputFilename}`]);
+                resolve();
+              }
+            }, 'three-panel');
+          });
+
+          // Next
+          if (batchIndex + 1 < batchFiles.length) {
+            setBatchIndex(prev => prev + 1);
+          } else {
+            setBatchStatus('Success');
+            setBatchIndex(-1);
+            setBatchLog(prev => [...prev, "Batch processing completed successfully!"]);
+          }
+
+        } catch (e) {
+          setBatchStatus('Error');
+          setBatchLog(prev => [...prev, `Error processing ${fileName}: ${(e as Error).message}`]);
+        } finally {
+          isProcessingFile.current = false;
+        }
+      };
+      
+      processFile();
+    }
+  }, [batchIndex, batchFiles, batchStatus, batchInputPath, batchOutputPath, connectivityGroups, handleAdjacencyFileSetWithFormat]);
   
   const addConnectivityGroup = () => {
     setConnectivityGroups(prev => [...prev, createNewConnectivityGroup()]);
@@ -518,23 +500,23 @@ const App: React.FC = () => {
       <div className="w-full max-w-7xl mx-auto flex flex-col px-4 pt-4 pb-6 font-sans flex-grow min-h-0">
         <header className="text-center mb-6 flex-shrink-0">
           <h1 className="text-4xl font-bold text-sky-400">3D Brain Connectivity Visualizer</h1>
-          <p className="text-slate-400 mt-2">
-            Upload your JSON files to visualize neural connections on a 3D brain surface.
+          <p className="text-slate-400 mt-2 italic">
+            [BETA] Software not for external distribution. Email vrishab@umd.edu with questions or development requests.
           </p>
         </header>
         
-        <main className="flex-grow flex flex-col lg:flex-row gap-6 min-h-0">
-          <div className="lg:w-[420px] lg:flex-shrink-0 bg-slate-800 p-6 rounded-lg shadow-2xl flex flex-col gap-6 overflow-y-auto">
+        <main className="flex-grow flex flex-col lg:flex-row gap-6 min-h-0 overflow-hidden">
+          <div className="lg:w-[420px] lg:flex-shrink-0 bg-slate-800 p-6 rounded-lg shadow-2xl flex flex-col gap-6 overflow-y-auto overflow-x-hidden">
             <h2 className="text-2xl font-semibold border-b border-slate-600 pb-2 text-sky-300">Controls</h2>
             
             {error && <div className="bg-red-900 border border-red-700 text-red-200 p-3 rounded-md">{error}</div>}
             
-            <fieldset disabled={isServerMode} className="space-y-6 disabled:opacity-50">
+            <fieldset disabled={batchStatus === 'Processing...'} className="space-y-6 disabled:opacity-50 min-w-0">
               <div className="space-y-4 border-b border-slate-700 pb-4">
                 <h3 className="text-lg font-semibold text-slate-300">Brain Surfaces</h3>
                 {brainSurfaces.map((surfaceData, index) => (
-                    <div key={surfaceData.id} className="p-3 bg-slate-700/50 rounded-lg space-y-4">
-                      <div className="flex items-center gap-2">
+                    <div key={surfaceData.id} className="p-3 bg-slate-700/50 rounded-lg space-y-4 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
                         <ColorPicker value={surfaceData.color} onChange={(color) => handleBrainColorChange(surfaceData.id, color)} />
                         <div className="flex-grow min-w-0">
                           <FileUpload
@@ -546,7 +528,7 @@ const App: React.FC = () => {
                           />
                         </div>
                         {brainSurfaces.length > 1 && (
-                          <button onClick={() => removeBrainSurface(surfaceData.id)} className="p-2 text-slate-400 hover:text-red-400 transition-colors" aria-label="Remove brain surface">
+                          <button onClick={() => removeBrainSurface(surfaceData.id)} className="p-2 text-slate-400 hover:text-red-400 transition-colors flex-shrink-0" aria-label="Remove brain surface">
                               <TrashIcon className="w-5 h-5" />
                           </button>
                         )}
@@ -572,8 +554,8 @@ const App: React.FC = () => {
               <div className="space-y-4 border-b border-slate-700 pb-4">
                 <h3 className="text-lg font-semibold text-slate-300">Voronoi Overlays</h3>
                 {voronoiOverlays.map((overlay, index) => (
-                  <div key={overlay.id} className="p-3 bg-slate-700/50 rounded-lg space-y-4">
-                      <div className="flex items-center gap-2">
+                  <div key={overlay.id} className="p-3 bg-slate-700/50 rounded-lg space-y-4 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
                         <div className="flex-grow min-w-0">
                           <FileUpload
                             label={`Overlay ${index + 1}`}
@@ -584,7 +566,7 @@ const App: React.FC = () => {
                           />
                         </div>
                         {voronoiOverlays.length > 0 && (
-                          <button onClick={() => removeVoronoiOverlay(overlay.id)} className="p-2 text-slate-400 hover:text-red-400 transition-colors" aria-label="Remove voronoi overlay">
+                          <button onClick={() => removeVoronoiOverlay(overlay.id)} className="p-2 text-slate-400 hover:text-red-400 transition-colors flex-shrink-0" aria-label="Remove voronoi overlay">
                             <TrashIcon className="w-5 h-5" />
                           </button>
                         )}
@@ -607,8 +589,9 @@ const App: React.FC = () => {
                           <div className="space-y-2">
                             <label className="block text-sm font-medium text-slate-400">Colormap</label>
                             <div className="flex gap-2">
-                              <button onClick={() => updateVoronoiOverlay(overlay.id, { colormap: 'viridis' })} className={`w-full text-sm py-1 px-2 rounded transition-colors ${overlay.colormap === 'viridis' ? 'bg-sky-600 text-white font-semibold' : 'bg-slate-600 hover:bg-slate-500'}`}>Viridis</button>
-                              <button onClick={() => updateVoronoiOverlay(overlay.id, { colormap: 'redblue' })} className={`w-full text-sm py-1 px-2 rounded transition-colors ${overlay.colormap === 'redblue' ? 'bg-sky-600 text-white font-semibold' : 'bg-slate-600 hover:bg-slate-500'}`}>Red/Blue</button>
+                              <button onClick={() => updateVoronoiOverlay(overlay.id, { colormap: 'viridis' })} className={`w-full text-xs py-1 px-2 rounded transition-colors ${overlay.colormap === 'viridis' ? 'bg-sky-600 text-white font-semibold' : 'bg-slate-600 hover:bg-slate-500'}`}>Viridis</button>
+                              <button onClick={() => updateVoronoiOverlay(overlay.id, { colormap: 'redblue' })} className={`w-full text-xs py-1 px-2 rounded transition-colors ${overlay.colormap === 'redblue' ? 'bg-sky-600 text-white font-semibold' : 'bg-slate-600 hover:bg-slate-500'}`}>Red/Blue</button>
+                              <button onClick={() => updateVoronoiOverlay(overlay.id, { colormap: 'fourregion' })} className={`w-full text-xs py-1 px-2 rounded transition-colors ${overlay.colormap === 'fourregion' ? 'bg-sky-600 text-white font-semibold' : 'bg-slate-600 hover:bg-slate-500'}`}>Four Region</button>
                             </div>
                           </div>
                         </div>
@@ -638,11 +621,11 @@ const App: React.FC = () => {
               <div className="space-y-4">
                 <h3 className="text-lg font-semibold text-slate-300">Connectivity Groups</h3>
                 {connectivityGroups.map((group, groupIndex) => (
-                  <div key={group.id} className="p-3 bg-slate-700/50 rounded-lg space-y-4 border border-slate-600">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-semibold text-slate-400">Group {groupIndex + 1}</h4>
+                  <div key={group.id} className="p-3 bg-slate-700/50 rounded-lg space-y-4 border border-slate-600 min-w-0">
+                    <div className="flex items-center justify-between min-w-0">
+                      <h4 className="font-semibold text-slate-400 truncate mr-2">Group {groupIndex + 1}</h4>
                       {connectivityGroups.length > 1 && (
-                        <button onClick={() => removeConnectivityGroup(group.id)} className="p-1 text-slate-400 hover:text-red-400 transition-colors" aria-label="Remove group">
+                        <button onClick={() => removeConnectivityGroup(group.id)} className="p-1 text-slate-400 hover:text-red-400 transition-colors flex-shrink-0" aria-label="Remove group">
                           <TrashIcon className="w-4 h-4" />
                         </button>
                       )}
@@ -659,8 +642,8 @@ const App: React.FC = () => {
                     <div className="space-y-3 pt-2">
                       <h5 className="text-sm font-semibold text-slate-400">Adjacency Matrices</h5>
                       {group.adjacencyMatrices.map((matrixData, matrixIndex) => (
-                        <div key={matrixData.id} className="p-2 bg-slate-900/30 rounded-md space-y-3">
-                          <div className="flex items-center gap-2">
+                        <div key={matrixData.id} className="p-2 bg-slate-900/30 rounded-md space-y-3 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
                             <ColorPicker value={matrixData.color} onChange={(color) => updateMatrixProperty(group.id, matrixData.id, { color })} />
                             <div className="flex-grow min-w-0">
                               <FileUpload
@@ -672,7 +655,7 @@ const App: React.FC = () => {
                               />
                             </div>
                             {group.adjacencyMatrices.length > 1 && (
-                              <button onClick={() => removeAdjacencyMatrix(group.id, matrixData.id)} className="p-1 text-slate-400 hover:text-red-400" aria-label="Remove matrix">
+                              <button onClick={() => removeAdjacencyMatrix(group.id, matrixData.id)} className="p-1 text-slate-400 hover:text-red-400 flex-shrink-0" aria-label="Remove matrix">
                                 <TrashIcon className="w-4 h-4" />
                               </button>
                             )}
@@ -717,6 +700,16 @@ const App: React.FC = () => {
                   checked={showConnections}
                   onChange={setShowConnections}
                 />
+                {showConnections && (
+                  <div className="pl-4">
+                    <ToggleSwitch
+                      id="toggle-center-arrowheads"
+                      label="Center Arrowheads"
+                      checked={centerArrowheads}
+                      onChange={setCenterArrowheads}
+                    />
+                  </div>
+                )}
                 <ToggleSwitch
                   id="toggle-curvature"
                   label="Curvature"
@@ -733,30 +726,134 @@ const App: React.FC = () => {
                   />
                 )}
                 <ToggleSwitch
+                  id="toggle-fdeb"
+                  label="Force Directed Bundling"
+                  checked={useFDEB}
+                  onChange={setUseFDEB}
+                />
+                <ToggleSwitch
+                  id="toggle-bundle-coloring"
+                  label="Bundle Coloring"
+                  description="Color bundles of edges based on their spatial origin and target. Helps distinguish crossing bundles."
+                  checked={useBundleColoring}
+                  onChange={setUseBundleColoring}
+                />
+                {useFDEB && (
+                  <>
+                    <Slider
+                      label="Bundling Stiffness (K)"
+                      description="Controls edge stiffness; lower values allow more bundling."
+                      id="fdeb-stiffness"
+                      min={0.01} max={1.0} step={0.01}
+                      value={fdebStiffness}
+                      onChange={setFdebStiffness}
+                    />
+                    <Slider
+                      label="Compatibility Threshold"
+                      description="Minimum similarity required for edges to bundle together."
+                      id="fdeb-compatibility"
+                      min={0.1} max={1.0} step={0.05}
+                      value={fdebCompatibility}
+                      onChange={setFdebCompatibility}
+                    />
+                    <Slider
+                      label="Bundling Cycles"
+                      description="Number of times the bundling process is repeated with increasing detail."
+                      id="fdeb-cycles"
+                      min={1} max={20} step={1}
+                      value={fdebCycles}
+                      onChange={setFdebCycles}
+                    />
+                    <Slider
+                      label="Initial Iterations"
+                      description="Number of force-directed steps in the first cycle."
+                      id="fdeb-iterations"
+                      min={10} max={500} step={10}
+                      value={fdebIterations}
+                      onChange={setFdebIterations}
+                    />
+                    <Slider
+                      label="Initial Subdivisions"
+                      description="Number of points each edge is divided into at the start."
+                      id="fdeb-subdivisions"
+                      min={1} max={5} step={1}
+                      value={fdebSubdivisions}
+                      onChange={setFdebSubdivisions}
+                    />
+                    <Slider
+                      label="Initial Step Size"
+                      description="Distance points move in each iteration; too low = no bundling, too high = distortion."
+                      id="fdeb-step-size"
+                      min={0.01} max={1.0} step={0.01}
+                      value={fdebStepSize}
+                      onChange={setFdebStepSize}
+                    />
+                  </>
+                )}
+                <ToggleSwitch
                   id="toggle-presentation"
                   label="Presentation Mode"
                   checked={presentationMode}
                   onChange={setPresentationMode}
                 />
+                <ToggleSwitch
+                  id="toggle-cartoon"
+                  label="Cartoon Mode"
+                  description="Render brain surfaces as flat 2D projections with faithful colors and no shading."
+                  checked={cartoonMode}
+                  onChange={setCartoonMode}
+                />
             </div>
 
             <div className="border-t border-slate-700 pt-4 space-y-4">
-              <h3 className="text-lg font-semibold text-slate-300">Server Control</h3>
+              <h3 className="text-lg font-semibold text-slate-300">Batch Processing</h3>
               <ToggleSwitch
-                id="toggle-server-mode"
-                label="Server Mode"
-                checked={isServerMode}
-                onChange={setIsServerMode}
+                id="toggle-batch-mode"
+                label="Enable Batch Mode"
+                checked={isBatchMode}
+                onChange={setIsBatchMode}
               />
-              {isServerMode && (
-                <p className="text-sm text-slate-400">
-                  Status: <span className={`font-semibold ${
-                    serverStatus === 'Connected' ? 'text-green-400' : 
-                    serverStatus === 'Processing...' ? 'text-sky-400' :
-                    serverStatus === 'Disconnected' ? 'text-red-400' :
-                    'text-yellow-400'}`}>{serverStatus}
-                  </span>
-                </p>
+              {isBatchMode && (
+                <div className="space-y-3 pl-4">
+                  <p className="text-[10px] text-slate-500 italic">Paths are relative to the project root.</p>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1">Input Directory (matrices)</label>
+                    <input 
+                      type="text" 
+                      value={batchInputPath} 
+                      onChange={e => setBatchInputPath(e.target.value)}
+                      placeholder="e.g. data/matrices"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1">Output Directory</label>
+                    <input 
+                      type="text" 
+                      value={batchOutputPath} 
+                      onChange={e => setBatchOutputPath(e.target.value)}
+                      placeholder="e.g. results"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200"
+                    />
+                  </div>
+                  <button
+                    disabled={batchStatus === 'Processing...' || batchStatus === 'Scanning...'}
+                    onClick={startBatchProcessing}
+                    className="w-full py-2 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-700 rounded text-sm font-semibold transition-colors"
+                  >
+                    {batchStatus === 'Processing...' ? 'Processing...' : 'Run Batch'}
+                  </button>
+                  
+                  {batchLog.length > 0 && (
+                    <div className="mt-4 p-2 bg-slate-900 rounded border border-slate-700 max-h-40 overflow-y-auto font-mono text-[10px] space-y-1">
+                      {batchLog.map((log, i) => (
+                        <div key={i} className={log.startsWith('Error') ? 'text-red-400' : log.includes('Success') ? 'text-green-400' : 'text-slate-400'}>
+                          {log}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -773,8 +870,7 @@ const App: React.FC = () => {
           </div>
 
           <div ref={viewerContainerRef} className="flex-grow bg-slate-800 rounded-lg shadow-2xl overflow-hidden relative">
-            {allFilesReady ? (
-              <div className="w-full h-full">
+            <div className="w-full h-full relative">
                 <BrainViewer
                   ref={brainViewerRef}
                   brainSurfaces={brainSurfaces}
@@ -782,23 +878,35 @@ const App: React.FC = () => {
                   voronoiOverlays={voronoiOverlays}
                   currentTimeIndex={currentTimeIndex}
                   showConnections={showConnections}
+                  centerArrowheads={centerArrowheads}
                   useCurvature={useCurvature}
                   curvature={curvature}
+                  useFDEB={useFDEB}
+                  fdebStiffness={fdebStiffness}
+                  fdebCompatibility={fdebCompatibility}
+                  fdebCycles={fdebCycles}
+                  fdebIterations={fdebIterations}
+                  fdebSubdivisions={fdebSubdivisions}
+                  fdebStepSize={fdebStepSize}
+                  useBundleColoring={useBundleColoring}
                   backgroundColor={backgroundColor}
                   presentationMode={presentationMode}
+                  cartoonMode={cartoonMode}
                 />
-              </div>
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <div className="text-center text-slate-400">
-                  <svg className="mx-auto h-12 w-12 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                  </svg>
-                  <h3 className="mt-2 text-lg font-medium text-slate-300">Awaiting Files</h3>
-                  <p className="mt-1 text-sm">Please upload a Brain Surface JSON file.</p>
-                </div>
-              </div>
-            )}
+                
+                {!allFilesReady && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-800 pointer-events-none">
+                    <div className="text-center text-slate-400">
+                      <svg className="mx-auto h-12 w-12 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                      <h3 className="mt-2 text-lg font-medium text-slate-300">Awaiting Files</h3>
+                      <p className="mt-1 text-sm">Please upload a Brain Surface JSON file.</p>
+                    </div>
+                  </div>
+                )}
+            </div>
+            
             {allFilesReady && (
               <div className="absolute top-4 right-4 z-10 flex gap-2">
                  <button onClick={() => brainViewerRef.current?.setView('top')} title="Top View" className="p-2 bg-slate-700/50 hover:bg-slate-600/70 rounded-full text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500" aria-label="Set top view"><CameraTopIcon className="w-5 h-5" /></button>
@@ -808,10 +916,10 @@ const App: React.FC = () => {
                  <div className="w-px bg-slate-600 mx-1"></div>
 
                  <button 
-                  onClick={() => brainViewerRef.current?.takeScreenshot((blob) => downloadBlob(blob, 'brain-views-standard.png'), 'standard')} 
-                  title="Capture Standard Views" 
+                  onClick={() => brainViewerRef.current?.takeScreenshot((blob) => downloadBlob(blob, 'brain-views-3panel.png'), 'three-panel')} 
+                  title="Capture 3-Panel View (Standard)" 
                   className="p-2 bg-slate-700/50 hover:bg-slate-600/70 rounded-full text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500" 
-                  aria-label="Take screenshot of standard views"
+                  aria-label="Take 3-panel screenshot"
                 >
                   <ScreenshotIcon className="w-5 h-5" />
                 </button>
@@ -832,6 +940,24 @@ const App: React.FC = () => {
                   aria-label="Take screenshot of rotation views"
                 >
                   <CameraRotationIcon className="w-5 h-5" />
+                </button>
+
+                <button 
+                  onClick={() => brainViewerRef.current?.takeScreenshot((blob) => downloadBlob(blob, 'brain-grid-screenshot.png'), 'grid')} 
+                  title="Capture 3x7 Grid View" 
+                  className="p-2 bg-slate-700/50 hover:bg-slate-600/70 rounded-full text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500" 
+                  aria-label="Take 3x7 grid screenshot"
+                >
+                  <GridIcon className="w-5 h-5" />
+                </button>
+
+                <button 
+                  onClick={() => brainViewerRef.current?.takeScreenshot((blob) => downloadBlob(blob, 'brain-views-two-panel.png'), 'two-panel')} 
+                  title="Capture Two Panel View" 
+                  className="p-2 bg-slate-700/50 hover:bg-slate-600/70 rounded-full text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500" 
+                  aria-label="Take two panel screenshot"
+                >
+                  <CameraTwoPanelIcon className="w-5 h-5" />
                 </button>
                  
                  <div className="w-px bg-slate-600 mx-1"></div>

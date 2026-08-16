@@ -3,17 +3,21 @@ import React from 'react';
 
 interface ToggleSwitchProps {
   label: string;
+  description?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   id: string;
 }
 
-const ToggleSwitch: React.FC<ToggleSwitchProps> = ({ label, checked, onChange, id }) => {
+const ToggleSwitch: React.FC<ToggleSwitchProps> = ({ label, description, checked, onChange, id }) => {
   return (
     <div className="flex items-center justify-between">
-      <label htmlFor={id} className="text-sm font-medium text-slate-300 cursor-pointer">
-        {label}
-      </label>
+      <div className="flex flex-col">
+        <label htmlFor={id} className="text-sm font-medium text-slate-300 cursor-pointer">
+          {label}
+        </label>
+        {description && <p className="text-[10px] text-slate-500 italic leading-tight">{description}</p>}
+      </div>
       <button
         id={id}
         role="switch"
